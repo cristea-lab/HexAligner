@@ -1,6 +1,6 @@
 # HexProx
 
-This repository was created to demonstrate and share image alignment method and spatial analysis method used in (spatial analysis of pancreatic tissue) (source). The study team aims to make the analysis more transparent and reproducible by others, and any comments of the method or the study are greatly appreciated. In addition, the study team hopes to iteratively improve this repository such that this analysis framework can be applied in other image analyses.
+This repository was created to demonstrate and share image alignment method and spatial analysis method used in (spatial analysis of pancreatic tissue) (source). The study team aims to make the analysis more transparent and reproducible by others, and any comments of the method or the study are greatly appreciated. In addition, the study team hopes to iteratively improve this repository such that this analysis framework can be applied in other image analyses by publishing this package in the future.
 
 Included in this repository are:
 - 2DBinaryAlign
