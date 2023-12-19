@@ -16,8 +16,13 @@ For the current version, the script is hard-coded such that one of the image is 
 This python code was ran in version 3.7.4.
 
 ## HexProx
-HexProx demonstrates spatial relationship of two-dimensional datapoints respective to the categorical data of the input. For instance, using HexProx enables users to investigate the spatial proximity of immune cells and different types of fibroblasts. To reflect the discrete nature of fibroblasts types, we overlay a tessellation of equal-sized hexagons on top of the range of data points and classify each hexagon by the contents of fibroblast cells. Specifically, for each hexagon that had at least one fibroblast cell, we classified each hexagon to be 'type A'-dominant if at least more than half of the fibroblast cells are 'type A'. After classifying each hexagon, we can then  
+HexProx demonstrates spatial relationship of multi-level, two-dimensional datapoints respective to the categorical data of the input. For instance, using HexProx enables users to investigate the spatial proximity of immune cells and different types of fibroblasts. This dataset is considered multi-level as the cells come from multiple slides by various donors; requiring us to consider both cell-level and patient-level spatial relationship.
 
-This is a R markdown file and soon to be uploaded.
+### Application on (study name)
+To reflect the discrete nature of fibroblasts types, we overlay a tessellation of equal-sized hexagons on top of the range of data points and classify each hexagon by the contents of fibroblast cells. Specifically, for each hexagon that had at least one fibroblast cell, we classified each hexagon to be 'type A'-dominant if at least more than half of the fibroblast cells are 'type A'. 
+
+After classifying each hexagon, we can then fit a genearlized linear mixed model (GLMM) to model the counts of immune cell by different fibroblasts types while accounting for random effects introduced by differences in immune cell content by different individuals.
+
+We model the counts by using a negative binomial distribution as the mean-variance relationship is overdispersed and is non-linear. We account for random effects by slide-level and patient-level information of the hexagons.
 
 This R code was ran in version 4.2.2.
