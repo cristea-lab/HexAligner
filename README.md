@@ -1,24 +1,107 @@
 # Hex Aligner
-This tool has two main functions: (1) to align equally-scaled 2D images (2DBinaryAlign), and (2) to tesselate image into non-overlapping, equally-sized hexagons for downstream analysis (HexTess). Users can clone the attached jupyter notebook files to adopt the code for their own use.
 
-## 2DBinaryAlign
-2DBinaryAlign aligns two binary images that are misaligned by an unknown amount of offset in the horizontal and/or vertical directions. This script will overlay the given two images in every possible way (i.e. sliding the image horizontally and vertically), pixel by pixel, and select the best aligned images. It assumes the images are in the same scale of units, in the same orientation, and expected to have some degree of overlap. The file has been modified so that it does not share patients' data. 
+Hex Aligner is a tool for spatial image analysis with two main functions:
 
-This script returns a dataframe of pixel coordinates of both images (labelled such that the pixel source is clear) and the aligned images in jpeg form. The dataframe can be used for the subsequent analysis used in HexTess. If the number of possible offsets is too large (greater than 10,000), the computational burden is too big. Hence, 10,000 random possibilities would be sampled and the one with the highest number of overlap would be selected.
+1. **2DBinaryAlign**: Align equally-scaled 2D binary images with unknown offsets.
+2. **HexTess**: Tessellate images into non-overlapping, equally-sized hexagons for downstream analysis.
 
-## HexTess
-HexTess tesselates an image into non-overlapping, equally-sized hexagon to summarize information at the hexagon-level. This reduction of image resolution may help with downstream analysis. For this example, each hexagon was categorized into different groups based on the dominant type of cells within each hexagon. This is helpful for our study team in investigating the spatial relationship between collagen-positive pixels and different types of fibroblast cells.
+This tool was developed to facilitate spatial analysis in image data, particularly in biomedical research. By aligning images and summarizing information at the hexagon level, researchers can investigate spatial relationships within the data more effectively.
 
-# Background
-This work was inspired from my spatial analysis of pancreatic tissue in which I was tasked to investigate the relationship between collagen and various types of fibroblasts. Through this GitHub repository, the study team aims to make the analysis more transparent and reproducible, and any comments of the method or the study are greatly appreciated. In addition, the study team hopes to iteratively improve this repository such that this analysis framework can be applied in other image analyses.
+## Features
+### 1. 2DBinaryAlign
+- **Automatic Image Alignment**: Aligns two binary images that may have unknown horizontal and/or vertical offsets.
+- **Exhaustive Search**: Overlays images in all possible positions by sliding one image over the other pixel by pixel.
+- **Optimized for Large Offsets**: When the number of possible offsets exceeds 10,000, the script samples 10,000 random offset positions to reduce computational burden.
+- **Output**:
+  - Aligned images saved as JPEG files.
+  - A DataFrame containing pixel coordinates from both images, labeled by source.
 
-## Application on the fibroblast study
-To reflect the discrete nature of fibroblasts types, we overlay a tessellation of equal-sized hexagons on top of the range of data points and classify each hexagon by the contents of fibroblast cells. Specifically, for each hexagon that had at least one fibroblast cell, we classified each hexagon to be 'type A'-dominant if at least more than half of the fibroblast cells are 'type A'. 
+### 2. HexTess
+- **Hexagonal Tessellation**: Divides an image into non-overlapping, equally-sized hexagons.
+- **Data Summarization**: Summarizes pixel-level information at the hexagon level.
+- **Cell Classification**: Assigns each hexagon to a group based on the dominant type of cells within it.
+- **Facilitates Spatial Analysis**: Useful for investigating spatial relationships between different cell types.
 
-After classifying each hexagon, we can then fit a genearlized linear mixed model (GLMM) to model the counts of immune cell by different fibroblasts types while accounting for random effects introduced by differences in immune cell content by different individuals.
+## Installation
+To use the Hex Aligner tool, follow these steps:
+1. **Clone the Repository**:
+   ```bash
+   git clone https://github.com/yourusername/hex-aligner.git
+   ```
 
-We model the counts by using a negative binomial distribution as the mean-variance relationship is overdispersed and is non-linear. We account for random effects by slide-level and patient-level information of the hexagons.
+2. **Set Up the Python Environment**:
+   - Ensure you have Python 3.7.4 installed.
+   - Install the required Python packages:
+     ```bash
+     pip install -r requirements.txt
+     ```
 
-# system requirements
-- Python code was ran in version 3.7.4.
-- R code was ran in version 4.2.2.
+3. **Set Up the R Environment** (optional, if using R scripts):
+   - Ensure you have R version 4.2.2 installed.
+   - Install the required R packages by running the following in R:
+     ```R
+     install.packages(c("lme4", "MASS", "ggplot2"))
+     ```
+## Usage
+### 1. 2DBinaryAlign
+#### Input Requirements
+- **Binary Images**: Two equally-scaled binary images in the same orientation (e.g., PNG or JPEG format).
+- **Overlap Expectation**: Images are expected to have some degree of overlap.
+#### Running the Alignment
+- Open the `2DBinaryAlign.ipynb` Jupyter Notebook.
+- Update the file paths to point to your input images.
+- Update the script to cater to your data specifications and needs.
+- Execute the notebook cells to perform the alignment.
+#### Output
+- **Aligned Images**: Saved in JPEG format in the specified output directory.
+- **DataFrame**: Contains pixel coordinates from both images, labeled to indicate the source image.
+
+### 2. HexTess
+#### Input Requirements
+- **Aligned Image**: Typically, the output from `2DBinaryAlign`.
+- **Hexagon Parameters**: Size and dimensions for the hexagonal grid.
+#### Running the Tessellation
+- Open the `HexTess.ipynb` Jupyter Notebook.
+- Configure the hexagon size and any classification criteria based on your analysis needs.
+- Update the script to classify hexagons and/or retain information at the hexagon-level
+- Execute the notebook cells to perform the tessellation and classification.
+#### Output
+- **Hexagon Grid Image**: The original image overlaid with a hexagonal grid.
+- **Classification Results**: Data indicating the classification of each hexagon.
+- **Summary DataFrame**: Aggregated information at the hexagon level for further analysis.
+## Example
+An example dataset and corresponding notebooks are provided in the `examples` directory. These demonstrate:
+- Aligning two sample images using `2DBinaryAlign`.
+- Tessellating the aligned image and classifying hexagons using `HexTess`.
+- Performing downstream analysis on the hexagon-level data.
+## System Requirements
+- **Python**: Version 3.7.4
+- **R**: Version 4.2.2 (if using R scripts)
+- **Operating System**: Platform-independent (tested on Windows, macOS, and Linux)
+## Background
+This work was inspired by spatial analysis of pancreatic tissue, where the goal was to investigate the relationship between collagen and various types of fibroblasts. By making this tool available, we aim to enhance transparency and reproducibility in image analysis. We welcome any comments or contributions to improve this repository for broader applications.
+## Application in Fibroblast Study
+In our fibroblast study, we applied HexAligner as follows:
+1. **Hexagonal Tessellation**: Overlaid a hexagonal grid on the spatial data to reflect the discrete nature of fibroblast types.
+2. **Hexagon Classification**:
+   - For each hexagon containing at least one fibroblast cell, we determined the dominant cell type.
+   - A hexagon was classified as 'Type A'-dominant if more than half of the fibroblast cells within it were 'Type A'.
+3. **Statistical Modeling**:
+   - Fitted a Generalized Linear Mixed Model (GLMM) to model immune cell counts by fibroblast types.
+   - Used a negative binomial distribution due to overdispersion in the data.
+   - Accounted for random effects at the slide and patient levels.
+4. **Results Interpretation**:
+   - Investigated spatial relationships between collagen-positive pixels and different fibroblast cell types.
+   - Provided insights into the spatial distribution and interaction of cells in pancreatic tissue.
+## Contributing
+We welcome contributions to enhance Hex Aligner:
+- **Bug Reports & Feature Requests**: Please open an issue on GitHub.
+- **Pull Requests**: Fork the repository and submit a pull request with your proposed changes.
+When contributing, please ensure:
+- Compliance with data privacy regulations.
+- Patient data is anonymized and de-identified.
+- Code is well-documented and adheres to existing coding standards.
+## License
+This project is licensed under the [MIT License].
+## Acknowledgments
+We thank the members of our study team for their contributions. 
