@@ -40,7 +40,7 @@ To use the Hex Aligner tool, follow these steps:
    - Ensure you have R version 4.2.2 installed.
    - Install the required R packages by running the following in R:
      ```R
-     install.packages(c("lme4", "MASS", "ggplot2"))
+     source("install_packages.R")
      ```
 ## Usage
 ### 1. 2DBinaryAlign
