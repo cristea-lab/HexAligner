@@ -1,5 +1,7 @@
 # HexAligner
 
+![HexAligner Diagram](./HexAligner_diagram.jpg)
+
 Hex Aligner is a tool for spatial image analysis with two main functions:
 
 1. **2DBinaryAlign**: Align equally-scaled 2D binary images with unknown offsets.
