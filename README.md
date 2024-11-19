@@ -35,6 +35,7 @@ To use the Hex Aligner tool, follow these steps:
      ```bash
      pip install -r requirements.txt
      ```
+   - if you have a different version of Python, you can refer to the **requirements.txt** to create your own working environment  
 
 3. **Set Up the R Environment** (optional, if using R scripts):
    - Ensure you have R version 4.2.2 installed.
@@ -42,6 +43,7 @@ To use the Hex Aligner tool, follow these steps:
      ```R
      source("install_packages.R")
      ```
+   - if you have a different version of R, you can refer to the **install_packages.R** to create your own working environment  
 ## Usage
 ### 1. 2DBinaryAlign
 #### Input Requirements
