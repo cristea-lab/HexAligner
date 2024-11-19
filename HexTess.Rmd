@@ -1,0 +1,1077 @@
+---
+title: "Hexagon Tessellation for Immune Cell + Collagen Analysis"
+output: pdf_document
+date: "2023-06-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+original_warning <- options("warning.expression")
+options(warning.expression = quote(
+  if (!grepl("Some expected counts are small; chi^2 approximation may be inaccurate", 
+             geterrmessage())) eval(original_warning)))
+```
+
+# 1. set-up
+## 1.1. environment
+``` {r}
+path_lib <- "additional/path/for_installed_packages" #INSERT YOUR OWN PATH HERE
+
+.libPaths(c(path_lib, .libPaths()))
+
+library(glue)
+library(MASS) # for glm.nb
+library(dplyr, lib.loc = path_lib)
+library(purrr)
+library(stringr, lib.loc = path_lib)
+library(tidyr, lib.loc = path_lib)
+library(tidyverse, lib.loc = path_lib)
+library(spatstat, lib.loc = path_lib)
+library(modeest, lib.loc = path_lib)
+library(ggplot2)
+library(reshape2, lib.loc = path_lib)
+library(gridExtra, lib.loc = path_lib)
+library(grid, lib.loc = path_lib)
+library(ggpubr, lib.loc = path_lib)
+library(tidyverse)
+
+path_project <- "path/to/project/" #INSERT YOUR OWN PATH HERE
+path_fig <- paste0(path_project, "figure/")
+path_plot <- paste0(path_project, "plot/")
+path_script <- paste0(path_project, "script/")
+path_data <- paste0(path_project, "data/")
+path_collagen <- paste0(path_project, "data/df_collagen_modified_231020/")
+
+path_collagen <- paste0(path_project, "data/df_collagen_231023/")
+path_cell_pixel <- paste0(path_project, "data/df_cell_231023/")
+path_df_collagen <- paste0(path_project, 'data/df_collagen_modified_231030/')
+path_df_hex <- paste0(path_project, 'data/df_hex_231031/')
+path_model = paste0(path_project, 'data/model_regress/woTSmixed/')
+path_rds <- paste0(path_project, 'data/model_regress/')
+```
+
+
+## 1.2 read cell_data and variables
+### 1.2.1 read cell_data and variables
+``` {r}
+vec_cell_major_type <- c("tumor", "stroma", "immune", "EC", "collagen")
+
+vec_cell_fibtype <- c("FAP.aSMA", "FAP.aSMA.LMNA", # of interest and FAP positive
+                      "aSMA", "aSMA.LMNA", "LMNA") # of interest and FAP negative
+
+vec_cell_fibtype_all <- c("FAP.aSMA", "FAP.aSMA.LMNA", # of interest and FAP positive
+                          "aSMA", "aSMA.LMNA", "LMNA", # of interest and FAP negative
+                          
+                          "FAP", "FAP.aSMA.CD74", "FAP.CD74", "FAP.LMNA", "FAP.LMNA.CD74", # not of interest and FAP positive
+                          "All.positive", "aSMA.CD74", "aSMA.LMNA.CD74", "CD74", "LMNA.CD74", # not of interest and FAP negative
+                          "unspecified")
+
+vec_cell_fibtype_FAP_pos <- c("FAP.aSMA", "FAP.aSMA.LMNA", "FAP", "FAP.aSMA.CD74", "FAP.CD74", 
+                              "FAP.LMNA", "FAP.LMNA.CD74")
+vec_cell_fibtype_FAP_neg <- c("aSMA", "aSMA.LMNA", "LMNA", "All.positive", "aSMA.CD74", 
+                              "aSMA.LMNA.CD74", "CD74", "LMNA.CD74")
+
+vec_hex_type_all <- c("tumor_wo_S", "TS_mixed", "stroma_wo_T", "immune_wo_TS")
+
+vec_hex_type_detail_all <- c(c("tumor_wo_S", "immune_wo_TS"), 
+                             vec_cell_fibtype, 
+                             c("other_fib", "no-dominance"))
+
+## create the output name structure
+color_map = c(
+  "aSMA" = "#f0f921",
+  "aSMA.LMNA" = "#fdca26",
+  "LMNA" = "#fb9f3a",
+  
+  "FAP.aSMA" = "#ed7953",
+  "FAP.aSMA.LMNA" = "#d8576b",
+  
+  "other_fib" = "#bd3786",
+  "no-dominance" = "#9c179e",
+  
+  "tumor_wo_S" = "#7201a8",
+  "immune_wo_TS" = "#46039f",
+  
+  "empty" ="#0d0887"
+  )
+```
+
+## 1.2. helper function
+
+```{r}
+### general
+# basic
+not.na <- Negate(is.na)
+`%!in%` <- Negate(`%in%`)
+
+# measure time
+fn_measure_time <- function(time_pre, title = "", units = "secs") {
+  if (units %!in% c("secs", "mins")) {
+    stop("Error: parameter <units> must be secs or mins")
+  }
+  print(paste0(title, " took ", (Sys.time() - time_pre) %>% as.numeric(units = units), " ", units))  
+}
+
+# get maximum of a row and returns the column name
+get_max_column <- function(row) {
+  if (all(row == 0)) {
+    return("empty")
+    }
+  max_cols <- which(row == max(row))
+  return(sample(names(row)[max_cols], 1))
+}
+
+# takes a row as an input returns the name of row entry that is equal or greater than 50% than the row sum
+# if there is no such dominant entry, it will return "none"
+findDominantColumn <- function(row) {
+  row_sum <- sum(row)
+  if (row_sum != 0) {
+    for (col_name in names(row)) {
+      if (row[col_name] >= row_sum / 2) {
+        return(col_name)
+      }
+    }
+    # will proceed here and return none
+    return("no-dominance")
+  }
+  return("none")
+}
+
+### specialized
+# reads the cell-level data and subsets for the specific slide
+fn_subset_cell_data <- function(cell_data, tumor_id, core_id) {
+  cell_data_subset <- cell_data %>% 
+    filter(
+      Phenotype %>% not.na,
+      tumor_ids == tumor_id,
+           core_ids == core_id) %>% 
+    select(X, Y, Phenotype, Phenotype.detail)  
+}
+
+# reads the cell-level data of a slide and returns counts of the cells of each type
+# vec_cell_fibtype <- c("aSMA", "aSMA.LMNA", "FAP.aSMA", "FAP.aSMA.CD74", "LMNA")
+fn_save_ncell_hex_type <- function(cell_data_subset, ppp_cell, hex_len, window_rect) {
+  ppp_list <- list()
+  count_type_list <- list()
+  for (p_i in vec_cell_major_type) {
+    ppp_list[[p_i]] <- as.ppp(cell_data_subset %>% 
+                                filter(Phenotype == p_i), W = window_rect) 
+    count_type_list[[p_i]] <- quadrat.test(ppp_list[[p_i]], tess = hextess(ppp_cell, hex_len))
+    
+  }  
+  for (p_i in vec_cell_fibtype_all) {
+    ppp_list[[p_i]] <- as.ppp(cell_data_subset %>% 
+                                filter(Phenotype.detail == p_i), W = window_rect) 
+    count_type_list[[p_i]] <- quadrat.test(ppp_list[[p_i]], tess = hextess(ppp_cell, hex_len))
+  }  
+  
+  # convert list of the data frame into a useable format
+  df_hex_cell_count <- count_type_list[[vec_cell_major_type[1]]]$observed %>% as.data.frame
+  for (col_i in c(vec_cell_major_type[2:length(vec_cell_major_type)], vec_cell_fibtype_all)) {
+    df_hex_cell_count <- df_hex_cell_count %>% cbind(count_type_list[[col_i]]$observed) %>% as.data.frame
+  }
+  colnames(df_hex_cell_count) <- c(vec_cell_major_type, vec_cell_fibtype_all)
+  
+  return(df_hex_cell_count)
+}
+
+# classify hexagons based on level 1 (counts of tumor, stroma, and immune cells)
+fn_class_hex <- function(df_hex_cell_count) {
+  df_hex_cell_count <- df_hex_cell_count %>% 
+    mutate(
+      type_hex = ifelse((immune == 0) & (stroma == 0) & (tumor == 0), "empty", # all zero
+                        ifelse((stroma == 0) & (tumor == 0), 
+                               "immune_wo_TS", # only immune
+                               ifelse(stroma == 0, 
+                                      "tumor_wo_S", # only tumor
+                                      ifelse(tumor == 0, 
+                                             "stroma_wo_T",
+                                             "TS_mixed")))),
+    )
+  
+  df_hex_cell_count$dominance_fib <- df_hex_cell_count %>% 
+    select(all_of(c(vec_cell_fibtype, "other_fib"))) %>% 
+    apply(1, findDominantColumn)
+  
+  df_hex_cell_count$dominance_FAP_pos <- df_hex_cell_count %>% 
+    select(all_of(c("FAP_pos", "FAP_neg", "unspecified"))) %>% 
+    apply(1, findDominantColumn)
+  
+  df_hex_cell_count <- df_hex_cell_count %>% 
+    mutate(
+      type_hex_fib_detail = ifelse(
+        type_hex %in% c("stroma_wo_T", "TS_mixed"),
+        dominance_fib,
+        type_hex),
+      type_hex_FAP_pos = ifelse(
+        type_hex %in% c("stroma_wo_T", "TS_mixed"),
+        dominance_FAP_pos,
+        type_hex)
+    )
+  
+  return(df_hex_cell_count)
+}
+
+# return information about the hexagons
+fn_extract_immune <- function(df_hex_cell_count) {
+
+  # only consider non-empty hexagons
+  df_hex_cell_count_noempty <- df_hex_cell_count %>% 
+    filter(type_hex != "empty")
+  
+  # summarize the data by major types
+  ## report count, hexagon average density, and average proportion of immune cells
+  df_summary_1 <- df_hex_cell_count_noempty %>% 
+    group_by(type_hex) %>% 
+    summarize(n = n(), 
+              n_cell = sum(tumor, stroma, immune, EC),
+              p_cell = n/n_cell,
+              avg_p_im = sum(immune)/n_cell)
+  
+  # by hexagon type 2
+  ## report count, hexagon average density, and average proportion of immune cells
+  df_summary_2 <- df_hex_cell_count_noempty %>% 
+    group_by(type_hex_fib_detail) %>% 
+    summarize(n = n(),
+              n_cell = sum(tumor, stroma, immune, EC),
+              den_cell = n_cell/n,
+              den_fib = sum(stroma)/n,
+              p_fib = sum(stroma)/n_cell,
+              p_im = sum(immune)/sum(tumor, stroma, immune, EC)) %>% 
+    filter(type_hex_fib_detail %!in% c("immune_wo_TS", "tumor_wo_S"))
+  
+  # by hexagon type 2 and TS vs S
+  df_summary_3 <- df_hex_cell_count_noempty %>% 
+    group_by(type_hex_fib_detail, type_hex) %>% 
+    summarize(n = n(),
+              n_cell = sum(tumor, stroma, immune, EC),
+              den_cell = n_cell/n,
+              den_fib = sum(stroma)/n,
+              p_fib = sum(stroma)/n_cell,
+              p_im = sum(immune)/sum(tumor, stroma, immune, EC)) %>% 
+    filter(type_hex_fib_detail %!in% c("immune_wo_TS", "tumor_wo_S"))
+  
+  # by hexagon type 3
+  df_summary_4 <- df_hex_cell_count_noempty %>% 
+    group_by(type_hex_FAP_pos) %>% 
+    summarize(n = n(),
+              n_cell = sum(tumor, stroma, immune, EC),
+              den_cell = n_cell/n,
+              den_fib = sum(stroma)/n,
+              p_fib = sum(stroma)/n_cell,
+              p_im = sum(immune)/sum(tumor, stroma, immune, EC)) %>% 
+    filter(type_hex_FAP_pos %!in% c("immune_wo_TS", "tumor_wo_S"))
+  
+  # by hexagon type 3 and TS vs S
+  df_summary_5 <- df_hex_cell_count_noempty %>% 
+    group_by(type_hex_FAP_pos, type_hex) %>% 
+    summarize(n = n(),
+              n_cell = sum(tumor, stroma, immune, EC),
+              den_cell = n_cell/n,
+              den_fib = sum(stroma)/n,
+              p_fib = sum(stroma)/n_cell,
+              p_im = sum(immune)/sum(tumor, stroma, immune, EC)) %>% 
+    filter(type_hex_FAP_pos %!in% c("immune_wo_TS", "tumor_wo_S"))
+  
+  return(list(summary_major_type = df_summary_1, 
+              summary_fib_type = df_summary_2, 
+              summary_fib_type_TS_S = df_summary_3, 
+              summary_FAP_pos = df_summary_4, 
+              summary_FAP_pos_TS_S = df_summary_5,
+              df_hex = df_hex_cell_count))
+}
+
+fn_quadrant <- function(method_x, method_y) {
+  if (method_x == 'min') {
+    string2 = "Left"
+  }
+  
+  else if (method_x == 'max') {
+    string2 = "Right"
+  }
+  
+  else {
+    string2 = ""
+  }
+  
+  if (method_y == 'min') {
+    string1 = 'Lower'
+  }
+  
+  else if (method_y == 'max') {
+    string1 = 'Upper'
+  }
+  
+  else {
+    string1 = "Average"
+  }
+  
+  return(paste0(string1, "_", string2))
+}
+
+fn_merge <- function(df_collagen, df_cell_subset, method_x = 'max', method_y = 'max',
+                     scale_multiplier = 2) {
+  # method must be %in% c(max, min, mean)
+  vec_method = c('max', 'min', 'mean_maxmin')
+  if (!(method_x %in% vec_method) | !(method_y %in% vec_method)) {
+    stop("Invalid method. Allowed methods are 'max', 'min', or 'mean'.")
+  }
+  
+  
+  max_cell_X = max(df_cell_subset$X, na.rm = T)
+  max_image_X = max(df_collagen$x * scale_multiplier, na.rm = T)
+  max_cell_Y = max(df_cell_subset$Y, na.rm = T)
+  max_image_Y = max(df_collagen$y * scale_multiplier, na.rm = T)
+  
+  min_cell_X = min(df_cell_subset$X, na.rm = T)
+  min_image_X = min(df_collagen$x * scale_multiplier, na.rm = T)
+  min_cell_Y = min(df_cell_subset$Y, na.rm = T)
+  min_image_Y = min(df_collagen$y * scale_multiplier, na.rm = T)
+  
+  mean_cell_X = mean(df_cell_subset$X, na.rm = T)
+  mean_image_X = mean(df_collagen$x * scale_multiplier, na.rm = T)
+  mean_cell_Y = mean(df_cell_subset$Y, na.rm = T)
+  mean_image_Y = mean(df_collagen$y * scale_multiplier, na.rm = T)
+  
+  median_cell_X = median(df_cell_subset$X, na.rm = T)
+  median_image_X = median(df_collagen$x * scale_multiplier, na.rm = T)
+  median_cell_Y = median(df_cell_subset$Y, na.rm = T)
+  median_image_Y = median(df_collagen$y * scale_multiplier, na.rm = T)
+  
+  offset_X = {}
+  offset_Y = {}
+  
+  offset_X['max'] = max_cell_X - max_image_X
+  offset_Y['max'] = max_cell_Y - max_image_Y
+  
+  offset_X['min'] = min_cell_X - min_image_X
+  offset_Y['min'] = min_cell_Y - min_image_Y
+  
+  offset_X['mean_maxmin'] = mean(c(offset_X['max'], offset_X['min']))
+  offset_Y['mean_maxmin'] = mean(c(offset_Y['max'], offset_Y['min']))
+  
+  print(offset_X['max'])
+  print(offset_X['min'])
+  print(offset_X['mean_maxmin'])
+  
+  print(offset_Y['max'])
+  print(offset_Y['min'])
+  print(offset_Y['mean_maxmin'])
+  
+  df_merge <- rbind(
+    df_collagen %>% 
+      mutate(
+        Phenotype = 'collagen',
+        X = (scale_multiplier*x) + offset_X[method_x],
+        Y = (scale_multiplier*y) + offset_Y[method_y],
+        Phenotype.detail = 'collagen',
+        Tissue = 'collagen') %>% 
+      select(Phenotype, X, Y, Phenotype.detail, Tissue),
+    
+    df_cell_subset %>% 
+      select(Phenotype, X, Y, Phenotype.detail, Tissue)  
+  )
+  
+  df_merge %>% ggplot() +
+    geom_point(aes(x = X, y = Y, color = Tissue), alpha = 0.2) + 
+    theme_minimal() + 
+    ggtitle(paste0(fn_quadrant(method_x, method_y), ' alignment')) +
+    annotate('point', 
+             x = min_image_X + offset_X[method_x], 
+             y = min_image_Y + offset_Y[method_y], 
+             shape = 4, size = 5, stroke = 2, color = 'yellow3') + 
+    annotate('point', 
+             x = min_cell_X, 
+             y = min_cell_Y, 
+             shape = 3, size = 5, stroke = 2, color = 'yellow3') + 
+    annotate('point', 
+             x = max_image_X + offset_X[method_x], 
+             y = max_image_Y + offset_Y[method_y], 
+             shape = 4, size = 5, stroke = 2, color = 'magenta') +
+    annotate('point', 
+             x = max_cell_X, 
+             y = max_cell_Y, 
+             shape = 3, size = 5, stroke = 2, color = 'magenta') +
+    annotate('point', 
+             x = max_image_X + offset_X[method_x], 
+             y = min_image_Y + offset_Y[method_y], 
+             shape = 4, size = 5, stroke = 2, color = 'black') +
+    annotate('point', 
+             x = max_cell_X, 
+             y = min_cell_Y, 
+             shape = 3, size = 5, stroke = 2, color = 'black') +
+    annotate('point', 
+             x = min_image_X + offset_X[method_x], 
+             y = max_image_Y + offset_Y[method_y], 
+             shape = 4, size = 5, stroke = 2, color = 'cyan') +
+    annotate('point', 
+             x = min_cell_X, 
+             y = max_cell_Y, 
+             shape = 3, size = 5, stroke = 2, color = 'cyan')
+}
+
+fn_read_collagen <- function(tumor_id, core_id, path_df_collagen) {
+  filename_df_collagen <- paste0(path_df_collagen, tumor_id, '_', core_id, '.tsv')
+  
+  df_collagen <- read.csv(filename_df_collagen, sep = '\t')
+  
+  # Check if 'x' and 'y' columns exist
+  if(!all(c('x', 'y') %in% colnames(df_collagen))) {
+    stop("<fn_read_collagen> ERROR: Columns 'x' and 'y' are required. tumor_id: {tumor_id} core_id: {core_id}")
+  }
+  
+  # Check if 'x' and 'y' are numeric
+  if(!is.numeric(df_collagen$x) || !is.numeric(df_collagen$y)) {
+    stop(glue("<fn_read_collagen> ERROR: Columns 'x' and 'y' must be numeric. tumor_id: {tumor_id} core_id: {core_id}"))
+  }
+  
+  # modify data
+  df_collagen <- df_collagen %>% 
+    mutate(X = x,
+           Y = y,
+           Phenotype = 'collagen',
+           Phenotype.detail = 'collagen') %>% 
+    select(-x, -y)
+  
+  return(df_collagen)
+}
+
+fn_save_ncell_hex_type <- function(cell_data_subset, ppp_cell, hex_len, window_rect) {
+  ppp_list <- list()
+  count_type_list <- list()
+  
+  hextess_temp = hextess(ppp_cell, hex_len)
+  vec_area <- sapply(hextess_temp$tiles, fn_compute_area)
+  
+  for (p_i in vec_cell_major_type) {
+    ppp_list[[p_i]] <- as.ppp(cell_data_subset %>% 
+                                filter(Phenotype == p_i), W = window_rect) 
+    count_type_list[[p_i]] <- quadrat.test(ppp_list[[p_i]], tess = hextess_temp)
+    
+  }  
+  for (p_i in vec_cell_fibtype_all) {
+    ppp_list[[p_i]] <- as.ppp(cell_data_subset %>% 
+                                filter(Phenotype.detail == p_i), W = window_rect) 
+    count_type_list[[p_i]] <- quadrat.test(ppp_list[[p_i]], tess = hextess_temp)
+  }  
+  
+  # convert list of the data frame into a useable format
+  df_hex_cell_count <- count_type_list[[vec_cell_major_type[1]]]$observed %>% as.data.frame
+  for (col_i in c(vec_cell_major_type[2:length(vec_cell_major_type)], vec_cell_fibtype_all)) {
+    df_hex_cell_count <- df_hex_cell_count %>% cbind(count_type_list[[col_i]]$observed) %>% as.data.frame
+  }
+  colnames(df_hex_cell_count) <- c(vec_cell_major_type, vec_cell_fibtype_all)
+  
+  print(glue("<fn_save_ncell_hex_type> vec_area length: {vec_area %>% length}"))
+  print(glue("<fn_save_ncell_hex_type> df_hex_cell_count dim: {df_hex_cell_count %>% dim}"))
+  
+  df_hex_cell_count <- df_hex_cell_count %>% 
+    mutate(
+    area = vec_area
+  )
+  
+  return(df_hex_cell_count)
+}
+
+fn_compute_area <- function(tile) {
+  
+  x = tile$bdry[[1]]$x
+  y = tile$bdry[[1]]$y
+  
+  if(length(x) != length(y)) {
+    stop("Error: x and y must have the same length.")
+  }
+  
+  if(length(x) < 3) {
+    stop("Error: At least 3 points are required to form a polygon.")
+  }
+  
+  # Close the polygon by appending the first point at the end
+  x <- c(x, x[1])
+  y <- c(y, y[1])
+  
+  # Applying the Shoelace formula
+  area <- 0.5 * abs(sum(x[-1] * y[-length(y)]) - sum(y[-1] * x[-length(x)]))
+  
+  return(area)
+}
+```
+
+
+## 1.5 write cell_data
+```{r}
+# create patient to slide reference table called data_right
+# data_map <-paste0(path_project, 'data/mapping.csv') %>% read.csv()
+# data_map <- rbind(data_map,
+#                   data_map %>% filter(Block_ID_cust == 2) %>% mutate(Block_ID_cust = 1))
+# data_right <- data_map %>%
+#   select(TumorID, TMA, Variant, Block_ID_cust, Core.1, Core.2) %>%
+#   gather(key = "num_core", value = "id_core", Core.1:Core.2) %>%
+#   filter(id_core != "") %>%
+#   mutate(num_core = ifelse(num_core == "Core.1", 1,
+#                            ifelse(num_core == "Core.2", 2, NA))) %>% 
+#   mutate(core_id_merge = paste0(TMA, ".", Variant, "_", Block_ID_cust, ",", id_core)) %>%
+#   mutate(core_id_merge = core_id_merge %>% trimws,
+#          TumorID = TumorID %>% trimws) %>% 
+#   select(core_id_merge, TumorID)
+# rm(data_map)
+
+# Description
+# Phenotype chr (stroma, tumor, immune)
+# X dbl
+# Y dbl
+# tumor_ids chr (tumor# 1 to 50)
+# core_ids chr (core# 1 to 4)
+
+# data_pan <- paste0(path_project, 'data/csdn2.rds') %>% readRDS()
+# data_pan_processed <-
+#   data_pan %>% 
+#   mutate(
+#     HTMA = Sample.Name %>% str_extract("(?<=HTMA )[0-9.]+"),
+#     core = Sample.Name %>% str_extract("(?<=_Core\\[)[0-9,]+"),
+#     window = Sample.Name %>% str_extract("(?<=\\]_\\[)[0-9,]+")
+#   ) %>%
+#   select(Phenotype.4.Cell.Type,
+#          Cell.X.Position,
+#          Cell.Y.Position,
+#          HTMA,
+#          core,
+#          Phenotype,
+#          Tissue.Category
+#          #,window
+#          ) %>%
+#   rename(
+#     Phenotype.detail = Phenotype,
+#     Tissue = Tissue.Category,
+#     Phenotype = Phenotype.4.Cell.Type,
+#     X = Cell.X.Position,
+#     Y = Cell.Y.Position,
+#     tumor_ids = HTMA,
+#     core_ids = core
+#     
+#   ) %>%
+#   mutate(Phenotype = ifelse(
+#     Phenotype == "Fibroblasts",
+#     "stroma",
+#     ifelse(
+# 
+#       Phenotype == "Tumor",
+#       "tumor",
+#       ifelse(Phenotype == "Immune cells",
+#              "immune",
+#              NA) # no entries should be NA
+#     )
+#   ))
+# 
+# # merge datasets
+# data_merge <- data_pan_processed %>%
+#   mutate(core_id_merge = paste0(tumor_ids, "_", core_ids)) %>% 
+#   left_join(data_right, by = "core_id_merge") %>% 
+#   select(Phenotype, X, Y, TumorID, core_id_merge, Phenotype.detail, Tissue) %>% 
+#   rename(
+#     tumor_ids = TumorID,
+#     core_ids = core_id_merge
+#     )
+# 
+# cell_data <- data_merge
+# cell_data %>% write.csv("../data/merged.csv", row.names = F)
+```
+
+
+# 2. write hexagon-level data & visualization
+## 2.1 read cell and collagen
+### 2.1.1 fn_combine_cell_collagen
+- combine cell and collagen
+```{r}
+fn_combine_cell_collagen <- function(tumor_id, core_id, path_df_collagen) {
+  # subset the data for the specific slide
+  cell_data_subset <- fn_subset_cell_data(cell_data, tumor_id, core_id)
+  
+  # add collagen data
+  df_collagen <- fn_read_collagen(tumor_id, core_id, path_df_collagen)
+  
+  # merge collagen and cell data
+  df_cell_collagen <- rbind(cell_data_subset, df_collagen)
+  
+  return(df_cell_collagen)
+}
+```
+
+### 2.1.2 fn_process_all
+```{r}
+# function to get plots and slide-level data of
+fn_process_all <- function(tumor_id, core_id, path_df_collagen, hex_len = 50, save_plot = F) {
+  # subset the data for the specific slide
+  cell_data_subset <- fn_subset_cell_data(cell_data, tumor_id, core_id)
+  
+  # get max and min of X, Y
+  df_summary <- cell_data_subset %>% 
+    summarize(minX = min(X) - 1, minY = min(Y) - 1,
+              maxX = max(X) + 1, maxY = max(Y) + 1)
+  
+  # generate window
+  window_rect <- owin(c(df_summary$minX[[1]], df_summary$maxX[[1]]),
+                      c(df_summary$minY[[1]], df_summary$maxY[[1]]))
+  
+  # add collagen data
+  df_collagen <- fn_read_collagen(tumor_id, core_id, path_df_collagen)
+  
+  # merge collagen and cell data
+  df_cell_collagen <- rbind(cell_data_subset, df_collagen)
+  
+  # generate ppp of cell data using the window
+  ppp_cell <- as.ppp(df_cell_collagen, W = window_rect)
+  
+  # get a count of each type
+  df_hex_cell_count <- fn_save_ncell_hex_type(df_cell_collagen, ppp_cell, hex_len, window_rect)
+  
+  # add other_fib, FAP_pos, and FAP_neg columns
+  df_hex_cell_count <- df_hex_cell_count %>% 
+    rowwise() %>% 
+    mutate(
+      other_fib = sum(c_across(all_of(setdiff(vec_cell_fibtype_all, vec_cell_fibtype)))),
+      FAP_pos = sum(c_across(all_of(vec_cell_fibtype_FAP_pos))),
+      FAP_neg = sum(c_across(all_of(vec_cell_fibtype_FAP_neg))))
+  
+  # classify hexagons (level 1)
+  df_hex_cell_count <- fn_class_hex(df_hex_cell_count)
+  
+  # count the number of hexagons
+  n_hex = df_hex_cell_count %>% nrow
+  
+  # save the plot
+  if (save_plot) {
+    # path to save all the plots
+    path_plot_output <- paste0(path_plot, "TIPC_hex_len", hex_len, "/")
+    # if the path does not exist, make a path
+    if (!file.exists(path_plot_output)) {
+      dir.create(path_plot_output, recursive = T)
+    }
+    
+    # output set-up
+    filename_plot <- paste0(path_plot_output, tumor_id, "_", core_id, ".png")
+    CairoPNG(filename = filename_plot, width = 16, height = 10, units = "in", dpi = 300)
+    
+    region <- ppp_cell %>% quadratcount(tess = hextess(ppp_cell, hex_len)) %>% as.tess
+    marks(region) <- df_hex_cell_count$type_hex_fib_detail
+    
+    vec_color_df <- df_hex_cell_count$type_hex_fib_detail %>% unique %>% sort
+    color_tiles <- color_map[vec_color_df] %>% unname
+    
+    type_name_ordered <- names(color_map)[names(color_map) %in% vec_color_df]
+    type_color_ordered <- color_map[type_name_ordered] %>% unname
+    
+    plot(region,
+         do.col = T,
+         col = color_tiles,
+         main = paste0(tumor_id, "_", core_id))
+
+    legend("bottomleft", 
+           legend = type_name_ordered, 
+           fill = type_color_ordered,
+           cex = 1.3)
+    
+    ## labels of S, TS stroma hexagons
+    ## Compute the centroids
+    centroids <- data.frame(x = numeric(), y = numeric())
+    tiles_list <- tiles(region)
+    for (i in seq_along(tiles_list)) {
+      tile <- tiles_list[[i]]
+      center_x <- mean(range(tile$x))
+      center_y <- mean(range(tile$y))
+      
+      # Get the mark for this tile (I'm assuming marks(region) contains the type_hex_fib_detail values)
+      mark <- marks(region)[[i, 1]]
+      
+      # Look up the color for this mark
+      col <- color_map[[mark]]
+      
+      centroids <- rbind(centroids, data.frame(x = center_x, y = center_y))
+      
+    }
+    
+    # make labels of TS and S
+    vec_label_TS_or_S <- 
+      df_hex_cell_count %>% 
+      mutate(label = ifelse(
+        type_hex %in% c("TS_mixed", "stroma_wo_T"),
+        ifelse(
+          type_hex == "TS_mixed", 
+          "TS", 
+          "S"),
+        "")) %>% 
+      select(label) %>% unlist %>% unname
+    
+    # Add labels to the plot
+    text(centroids$x, centroids$y, labels = vec_label_TS_or_S, cex = 1.7, col = "black")
+    dev.off()
+  }
+  
+  return(fn_extract_immune(df_hex_cell_count))
+  
+}
+```
+
+
+## 2.2 Measure hexagon size
+```{r}
+# area of hexagon is rectangle minus four triangles in the corners
+fn_get_hex_area <- function(x, y) {
+  min_x <- min(x)
+  max_x <- max(x)
+  min_y <- min(y)
+  max_y <- max(y)
+  
+  x_sorted_unique <- x %>% unique %>% sort
+  y_sorted_unique <- y %>% unique %>% sort
+  
+  area_rect <- (max_y - min_y) * (max_x - min_x)
+  
+  area_triangle <- 0.5 * (x_sorted_unique[2] - min_x) * (y_sorted_unique[2] - min_y)
+  
+  print(max_x - min_x)
+  print(x_sorted_unique[3] - x_sorted_unique[2])
+  
+  print(max_y - min_y)
+  
+  return(area_rect - area_triangle * 4)
+  
+}
+```
+
+## 2.3. count cells per hexagon length
+This was done by the computing cluster because it took too much time
+```{r}
+# function to count the number of cells per hexagon per slide
+fn_count_cell_hex <- function(tumor_id, core_id, hex_len) {
+  cell_data_subset <- cell_data %>% 
+    filter(
+      Phenotype %>% not.na,
+      tumor_ids == tumor_id,
+           core_ids == core_id) %>% 
+    select(X, Y, Phenotype)
+  
+  df_summary <- cell_data_subset %>% 
+  summarize(minX = min(X) - 1,
+            minY = min(Y) - 1,
+            maxX = max(X) + 1,
+            maxY = max(Y) + 1)
+  
+  window_rect <- owin(c(df_summary$minX[[1]], df_summary$maxX[[1]]),
+                      c(df_summary$minY[[1]], df_summary$maxY[[1]]))
+  
+  ppp_cell <- as.ppp(cell_data_subset, W = window_rect)  
+  ppp_cell_count <- ppp_cell %>% quadratcount(tess = hextess(ppp_cell, hex_len))
+  
+  ppp_list <- list()
+  test_list <- list()
+  for (p_i in c("immune", "stroma", "tumor")) {
+    ppp_list[[p_i]] <- as.ppp(cell_data_subset %>% 
+                         filter(Phenotype == p_i), W = window_rect) 
+    test_list[[p_i]] <- quadrat.test(ppp_list[[p_i]], tess = hextess(ppp_cell, hex_len))
+    
+    # count the number of each cell types
+    assign(paste0('n_', p_i), sum(cell_data_subset$Phenotype == p_i))
+    paste0("number of cells for ", p_i, ": ", get(paste0('n_', p_i))) %>% print
+  }
+  
+  df_hex_cell_count <- cbind(test_list[["immune"]]$observed, 
+                   test_list[["stroma"]]$observed, 
+                   test_list[["tumor"]]$observed) %>% as.data.frame
+  colnames(df_hex_cell_count) <- c("immune", "stroma", "tumor")
+  df_hex_cell_count <- df_hex_cell_count %>% 
+    mutate(type_hex = ifelse((immune == 0) & (stroma == 0) & (tumor == 0), "empty", # all zero
+                             ifelse((stroma == 0) & (tumor == 0), 
+                                    "immune_only", # only immune
+                                    ifelse(stroma == 0, 
+                                           "tumor_only", # only tumor
+                                           ifelse(tumor == 0, 
+                                                  "stroma_only",
+                                                  "TS_mixed")))))
+  vec_cell_count_hex <- df_hex_cell_count %>% filter(type_hex != "empty") %>% 
+    select(immune, stroma, tumor) %>% 
+    as.matrix() %>% 
+    rowSums()
+  return(vec_cell_count_hex)
+}
+```
+
+# 3. Figures
+## 3.1. by phenotype
+``` {r}
+# table 1
+cell_data %>% group_by(Phenotype) %>% summarize(n = n())
+
+# figure 1
+data_pan %>% group_by(Phenotype.4.Cell.Type) %>% summarize(n = n())
+f1 <- data_pan %>% filter(Phenotype.4.Cell.Type == "Fibroblasts") %>% group_by(Phenotype) %>% summarize(n = n()) %>% ggplot() + 
+  geom_bar(aes(x = Phenotype, y = n, fill = Phenotype), stat = "identity") +
+  theme(axis.text.x = element_text(angle = 70, hjust = 1)) +
+  ylab("count") + ggtitle("figure 1: distribution of fibroblasts by type") +
+  ylim(0, 160000) + scale_y_continuous(limits = c(0, 160000), expand = c(0, 0))
+ggsave(paste0(path_fig, "figure1_fibroblast_dist.png"), plot = f1, width = 10, height = 10, units = "in")
+
+# figure 1b
+df_fb_comp <- cell_data %>% 
+  filter(Phenotype == "stroma") %>% 
+  group_by(tumor_ids, Phenotype.detail) %>% 
+  summarize(n = n()) %>% ungroup
+
+f1b <- df_fb_comp %>% group_by(tumor_ids) %>% mutate(prop = n / sum(n)) %>% 
+  ggplot(aes(fill = Phenotype.detail, x = tumor_ids, y = prop)) +
+  geom_bar(position = "stack", stat = "identity") +
+  labs(x = "Patient", y = "Composition", stat = "identity") +
+  theme(axis.text.x = element_blank()) + ggtitle("figure 1b: composition of fib. subtypes") +
+  scale_y_continuous(expand = c(0, 0))
+
+ggsave(paste0(path_fig, "figure1b_fibroblast_sub_comp.png"), plot = f1b, width = 20, height = 10, units = "in")
+```
+
+## 3.2. by patient
+``` {r}
+# table 2
+cell_data %>% select(tumor_ids, core_ids) %>% unique %>% 
+  group_by(tumor_ids) %>% summarize(n = n()) %>% group_by(n) %>% summarize(count_count = n())
+
+vec_ncell_slide <- cell_data %>% group_by(tumor_ids, core_ids) %>% 
+  summarize(n = n()) %>% ungroup %>% 
+  select(n) %>% unlist
+
+# figure 2
+f2 <- cell_data %>% group_by(tumor_ids, core_ids) %>% summarize(n = n()) %>% 
+  ggplot() +
+  geom_histogram(aes(n), binwidth = 100) + 
+  ggtitle("figure 2: distribution of number of cells/slide") +
+  ylab("count") +
+  xlab("number of cells")
+ggsave(paste0(path_fig, "figure2_ncell_dist_by_slide.png"), plot = f2, width = 10, height = 6, units = "in")
+
+# figure 3
+f3 <- df_cell_summary %>% ggplot +
+  geom_histogram(aes(area), binwidth = 10000) +
+  ggtitle("figure 3: distribution of slide size")
+ggsave(paste0(path_fig, "figure3_area_dist_by_slide.png"), plot = f3, width = 10, height = 6, units = "in")
+```
+
+## 3.3. density of immune cells in hexagon
+### 3.3.1. figure 9: using dominance rule 1
+```{r}
+color_tumor_only <- "#C77BFF"
+color_stroma_only <- "#7CAE00"
+color_ts_mixed <- "#00BFC4"
+
+# figure 9a
+df_hex <- df_hex %>% 
+  mutate(total_n = immune + stroma + tumor,
+         prop_immune = immune / total_n)
+
+f9a <- df_hex %>% filter(type_hex != "immune_only") %>% ggplot() +
+  geom_boxplot(aes(x = type_hex, y = prop_immune, fill = type_hex)) +
+  scale_fill_manual(values = c("tumor_only" = color_tumor_only, "stroma_only" = color_stroma_only, "TS_mixed" = color_ts_mixed)) +
+  labs(x = "hexagon classifications", y = "proportions of immune cells", 
+       title = "figure 9a: boxplot of immune cell proportions by hexagon type") + theme_minimal()
+
+# table 7a
+df_hex %>% filter(type_hex != "immune_only") %>% 
+  group_by(type_hex) %>% summarize(n = n())
+
+CairoPNG(filename = "../figure/figure9a_box_immune_by_hex.png", width = 10, height = 6, units = "in", dpi = 300)
+print(f9a) # print your ggplot object
+dev.off()
+
+# figure 9b
+f9b <- df_hex %>% filter(type_hex %in% c("stroma_only", "TS_mixed")) %>% 
+  mutate(type_hex_detail = paste0(type_hex, "_", type_fib)) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = type_hex_detail, y = prop_immune, fill = type_hex_detail)) +
+  labs(x = "hexagon classifications (detailed)", y = "proportions of immune cells", 
+       title = "figure 9b: boxplot of immune cell proportions by hexagon type (detailed)") + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# table 7b
+df_hex %>% filter(type_hex %in% c("stroma_only", "TS_mixed")) %>% 
+  mutate(type_hex_detail = paste0(type_hex, "_", type_fib)) %>% 
+  group_by(type_hex_detail) %>% summarize(n = n())
+
+CairoPNG(filename = "../figure/figure9b_box_immune_by_hex_fib.png", width = 10, height = 6, units = "in", dpi = 300)
+print(f9b) # print your ggplot object
+dev.off()
+
+# figure 9c
+f9c <- df_hex %>% filter(type_hex %in% c("stroma_only", "TS_mixed"), type_fib != "empty") %>% 
+  ggplot() +
+  geom_boxplot(aes(x = type_fib, y = prop_immune, fill = type_fib)) +
+  labs(x = "hexagon classifications (fibroblasts only)", y = "proportions of immune cells", 
+       title = "figure 9c: boxplot of immune cell proportions by hexagon type (fibroblast only)") + theme_minimal()
+
+
+CairoPNG(filename = "../figure/figure9c_box_immune_by_hex_fib_only.png", width = 10, height = 6, units = "in", dpi = 300)
+print(f9c) # print your ggplot object
+dev.off()
+
+# table 7c
+df_hex %>% filter(type_hex %in% c("stroma_only", "TS_mixed"), type_fib != "empty") %>% group_by(type_fib) %>% summarize(n = n())
+```
+
+### 3.3.2. figure 10: different dominance rules
+```{r}
+# figure 10
+# figure 10c
+f10c <- df_hex %>% 
+  mutate(
+    type_fib_dom2 = ifelse(aSMA > total_fib3/2, 
+                           "aSMA",
+                           ifelse(aSMA_LMNA > total_fib3/2, 
+                                  "aSMA.LMNA",
+                                  ifelse(FAP.aSMA > total_fib3/2, 
+                                         "FAP.aSMA",
+                                         "no-dominance")
+                           )
+    )
+  ) %>% 
+  filter(type_hex %in% c("stroma_only", "TS_mixed"), type_fib != "empty") %>% 
+  ggplot() +
+  geom_boxplot(aes(x = type_fib_dom2, y = prop_immune, fill = type_fib_dom2)) +
+  labs(x = "hexagon classifications (fibroblasts only)", y = "proportions of immune cells", 
+       title = "figure 10c: boxplot of immune cell proportions by hexagon type (fibroblast only)") + 
+  theme_minimal()
+
+CairoPNG(filename = "../figure/figure10c_box_immune_by_hex_fib_rule3.png", 
+         width = 10, height = 6, units = "in", dpi = 300)
+print(f10c) # print your ggplot object
+dev.off()
+
+# table 8a
+df_hex %>% 
+  mutate(
+    type_fib_dom2 = ifelse(aSMA > total_fib3/2, 
+                           "aSMA",
+                           ifelse(aSMA_LMNA > total_fib3/2, 
+                                  "aSMA.LMNA",
+                                  ifelse(FAP.aSMA > total_fib3/2, 
+                                         "FAP.aSMA",
+                                         "no-dominance")
+                           )
+    )
+  ) %>% filter(type_hex %in% c("stroma_only", "TS_mixed"), 
+                  type_fib != "empty") %>% group_by(type_fib_dom2) %>% summarize(n = n())
+
+# figure 10b
+f10b <- df_hex %>% 
+  mutate(
+    type_fib_dom2 = ifelse(aSMA > total_fib3/2, 
+                           "aSMA",
+                           ifelse(aSMA_LMNA > total_fib3/2, 
+                                  "aSMA.LMNA",
+                                  ifelse(FAP.aSMA > total_fib3/2, 
+                                         "FAP.aSMA",
+                                         "no-dominance")
+                           )
+    )
+  ) %>% filter(type_hex %in% c("stroma_only", "TS_mixed")) %>% 
+  mutate(type_hex_detail = paste0(type_hex, "_", type_fib_dom2)) %>% 
+  ggplot() +
+  geom_boxplot(aes(x = type_hex_detail, y = prop_immune, fill = type_hex_detail)) +
+  labs(x = "hexagon classifications (detailed)", y = "proportions of immune cells", 
+       title = "figure 10b: boxplot of immune cell proportions by hexagon type (detailed) with rule 3") + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# table 7b
+df_hex %>% filter(type_hex %in% c("stroma_only", "TS_mixed")) %>% 
+  mutate(type_hex_detail = paste0(type_hex, "_", type_fib)) %>% 
+  group_by(type_hex_detail) %>% summarize(n = n())
+
+CairoPNG(filename = "../figure/figure10b_box_immune_by_hex_fib_rule3.png", 
+         width = 10, height = 6, units = "in", dpi = 300)
+print(f10b) # print your ggplot object
+dev.off()
+```
+
+### 3.3.3. regression visualization without TS mixed
+```{r}
+path_model %>% list.files
+model_nb_collagen_hex3 <- paste0(path_model,
+                                 'collagen_hex3_nb_core_id_categorical_ref_.rds') %>% readRDS()
+
+model_nb_collagen_hex3
+```
+
+## 3.4. distribution of number of cells
+
+```{r}
+list_ncell_hex_40 <- readRDS("../rdata/count_by_len_40.rds")
+list_ncell_hex_50 <- readRDS("../rdata/count_by_len_50.rds")
+list_ncell_hex_60 <- readRDS("../rdata/count_by_len_60.rds")
+
+# figure 7a:
+vec_ncell <- list_ncell_hex_60 %>% unlist %>% unname
+df_f7a_60 <- data.frame(vec_ncell, len = 60)
+median_nhex_60_7a <- vec_ncell %>% median
+
+vec_ncell <- list_ncell_hex_50 %>% unlist %>% unname
+df_f7a_50 <- data.frame(vec_ncell, len = 50)
+median_nhex_50_7a <- vec_ncell %>% median
+
+vec_ncell <- list_ncell_hex_40 %>% unlist %>% unname
+df_f7a_40 <- data.frame(vec_ncell, len = 40)
+median_nhex_40_7a <- vec_ncell %>% median
+
+df_f7a <- rbind(df_f7a_40, df_f7a_50, df_f7a_60)
+rm(df_f7a_40, df_f7a_50, df_f7a_60)
+
+f7a <- df_f7a %>% 
+  ggplot() +
+  geom_histogram(
+    aes(vec_ncell, fill = len %>% as.factor), 
+    binwidth = 1, alpha = 0.3,
+    position = "identity") + 
+  ggtitle("figure 7a: distribution of number of cells per hexagon") +
+  ylab("count") +
+  xlab("number of cells") +
+  geom_vline(aes(xintercept = median_nhex_40_7a), alpha = 0.3, color = "red") +
+  geom_vline(aes(xintercept = median_nhex_50_7a), alpha = 0.3, color = "darkgreen") +
+  geom_vline(aes(xintercept = median_nhex_60_7a), alpha = 0.3, color = "blue") +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(fill = "hexagon length") + theme_minimal()
+
+CairoPNG(filename = "../figure/figure7a_nhex_dist_per_slide.png", width = 10, height = 6, units = "in", dpi = 300)
+print(f7a) # print your ggplot object
+dev.off()
+
+# figure 7b: number of hexagons per slide
+vec_nhex <- list_ncell_hex_60 %>% lengths %>% unname
+df_f7b_60 <- data.frame(vec_nhex, len = 60)
+median_nhex_60 <- vec_nhex %>% median
+
+vec_nhex <- list_ncell_hex_50 %>% lengths %>% unname
+df_f7b_50 <- data.frame(vec_nhex, len = 50)
+median_nhex_50 <- vec_nhex %>% median
+
+vec_nhex <- list_ncell_hex_40 %>% lengths %>% unname
+df_f7b_40 <- data.frame(vec_nhex, len = 40)
+median_nhex_40 <- vec_nhex %>% median
+
+df_f7b <- rbind(df_f7b_40, df_f7b_50, df_f7b_60)
+rm(df_f7b_40, df_f7b_50, df_f7b_60)
+
+f7b <- df_f7b %>% 
+  ggplot() +
+  geom_histogram(
+    aes(vec_nhex, fill = len %>% as.factor), 
+    binwidth = 5, alpha = 0.3,
+    position = "identity") + 
+  ggtitle("figure 7b: distribution of number of hexagons per slide") +
+  ylab("count") +
+  xlab("number of hexagons") +
+  geom_vline(aes(xintercept = median_nhex_40), alpha = 0.3, color = "red") +
+  geom_vline(aes(xintercept = median_nhex_50), alpha = 0.3, color = "darkgreen") +
+  geom_vline(aes(xintercept = median_nhex_60), alpha = 0.3, color = "blue") +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(fill = "hexagon length") + theme_minimal()
+
+CairoPNG(filename = "../figure/figure7b_nhex_dist_per_slide.png", width = 10, height = 6, units = "in", dpi = 300)
+print(f7b) # print your ggplot object
+dev.off()
+```
